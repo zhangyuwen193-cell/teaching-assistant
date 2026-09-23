@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>教學助理成績管理</title>
+  <style>
+    :root {
+      font-family: Arial, "Microsoft JhengHei", sans-serif;
+      color: #17324d;
+      background: #f4f7fb;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    header {
+      background: #173e68;
+      color: white;
+      padding: 18px max(20px, calc((100vw - 1100px) / 2));
+    }
+    header h1 { margin: 0; font-size: 23px; }
+    main { max-width: 1100px; margin: 30px auto; padding: 0 18px; }
+    .bar, .actions, .tabs {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .bar { justify-content: space-between; margin-bottom: 18px; }
+    .bar select { min-width: 230px; }
+    .card {
+      background: white;
+      border: 1px solid #dce5ee;
+      border-radius: 12px;
+      padding: 22px;
+      margin-bottom: 18px;
+    }
+    .course-info h2 { margin: 0 0 9px; }
+    .course-info p { margin: 0; color: #61758a; }
+    button {
+      border: 1px solid #cbd9e6;
+      border-radius: 8px;
+      background: white;
+      color: #173e68;
+      padding: 9px 13px;
+    }
+    button:hover { background: #eef5fb; }
+    button.primary {
+      background: #173e68;
+      color: white;
+      border-color: #173e68;
+    }
+    button.primary:hover { background: #285a88; }
+    button.danger { color: #a33232; }
+    .tabs { border-bottom: 1px solid #dce5ee; margin-bottom: 18px; }
+    .tabs button { border: 0; border-radius: 0; }
+    .tabs button.active {
+      border-bottom: 3px solid #d5a64b;
+      font-weight: bold;
+    }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; min-width: 520px; }
+    th, td { border-bottom: 1px solid #e6edf3; padding: 12px; text-align: left; }
+    th { background: #f4f8fc; color: #5b7085; white-space: nowrap; }
+    td input[type="number"] { width: 90px; }
+    input, select {
+      border: 1px solid #cbd9e6;
+      border-radius: 7px;
+      padding: 9px;
+      background: white;
+    }
+    .muted { color: #687e92; }
+    .empty { padding: 35px 10px; text-align: center; color: #687e92; }
+    dialog {
+      border: 1px solid #dce5ee;
+      border-radius: 12px;
+      padding: 25px;
+      width: min(440px, calc(100vw - 30px));
+      box-shadow: 0 20px 60px #17324d33;
+    }
+    dialog::backdrop { background: #122d49aa; }
+    dialog h2 { margin-top: 0; }
+    dialog label { display: grid; gap: 6px; margin: 13px 0; }
+    dialog menu {
+      display: flex;
+      justify-content: flex-end;
+      gap: 9px;
+      padding: 0;
+      margin-bottom: 0;
+    }
+    @media (max-width: 650px) {
+      .bar { align-items: stretch; }
+      .bar select { width: 100%; }
+      .card { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <header><h1>教學助理成績管理</h1></header>
+
+  <main>
+    <div class="bar">
+      <div class="actions">
+        <label for="courseSelect">目前課程</label>
+        <select id="courseSelect"></select>
+        <button id="addCourse" class="primary">＋ 新增課程</button>
+      </div>
+      <span class="muted">資料儲存在這台裝置的瀏覽器</span>
+    </div>
+
+    <section id="courseInfo" class="card course-info"></section>
+
+    <section class="card">
+      <nav class="tabs" aria-label="課程內容">
+        <button data-tab="grades">成績總表</button>
+        <button data-tab="students">學生名單</button>
+        <button data-tab="sessions">課堂紀錄</button>
+      </nav>
+      <div id="content"></div>
+    </section>
+  </main>
+
+  <dialog id="editor">
+    <h2 id="editorTitle"></h2>
+    <form id="editorForm">
+      <div id="formFields"></div>
+      <menu>
+        <button type="button" id="cancelEdit">取消</button>
+        <button type="submit" class="primary">儲存</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script>
+    const STORAGE_KEY = "teaching-assistant-gradebook-v1";
+    const emptyData = () => ({
+      courses: [],
+      students: [],
+      sessions: [],
+      scores: []
+    });
+
+    let data;
+    try {
+      data = JSON.parse(localStorage.getItem(STORAGE_KEY)) || emptyData();
+      if (!Array.isArray(data.courses)) throw new Error("invalid data");
+    } catch {
+      data = emptyData();
+    }
+
+    let currentCourse = data.courses[0]?.id || null;
+    let currentTab = "grades";
+    let editing = { type: null, id: null };
+
+    const $ = selector => document.querySelector(selector);
+    const uid = () =>
+      crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`;
+
+    function escapeHTML(value) {
+      return String(value ?? "").replace(/[&<>"']/g, character => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      })[character]);
+    }
+
+    function save() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+      render();
+    }
+
+    function course() {
+      return data.courses.find(item => item.id === currentCourse);
+    }
+
+    function students() {
+      return data.students
+        .filter(item => item.courseId === currentCourse)
+        .sort((a, b) => a.number.localeCompare(b.number));
+    }
+
+    function sessions() {
+      return data.sessions
+        .filter(item => item.courseId === currentCourse)
+        .sort((a, b) => a.date.localeCompare(b.date));
+    }
+
+    function score(sessionId, studentId) {
+      return data.scores.find(item =>
+        item.sessionId === sessionId &&
+        item.studentId === studentId
+      );
+    }
+
+    function average(studentId) {
+      const values = sessions()
+        .map(session => score(session.id, studentId)?.value)
+        .filter(value => typeof value === "number");
+
+      if (!values.length) return "—";
+
+      return (
+        values.reduce((sum, value) => sum + value, 0) /
+        values.length
+      ).toFixed(1);
+    }
+
+    function render() {
+      const select = $("#courseSelect");
+
+      select.innerHTML = data.courses.length
+        ? data.courses.map(item => `
+            <option value="${escapeHTML(item.id)}"
+              ${item.id === currentCourse ? "selected" : ""}>
+              ${escapeHTML(item.name)}
+            </option>
+          `).join("")
+        : '<option value="">尚未建立課程</option>';
+
+      const selected = course();
+
+      $("#courseInfo").innerHTML = selected
+        ? `
+          <div class="bar">
+            <div>
+              <h2>${escapeHTML(selected.name)}</h2>
+              <p>
+                ${escapeHTML(selected.teacher)} ·
+                ${escapeHTML(selected.schedule)} ·
+                ${escapeHTML(selected.classroom)}
+                ${selected.semester
+                  ? " · " + escapeHTML(selected.semester)
+                  : ""}
+              </p>
+            </div>
+            <button data-edit-course>編輯課程</button>
+          </div>
+        `
+        : `
+          <h2>建立第一門課程</h2>
+          <p>輸入課程名稱、教師、時間與教室後即可新增學生。</p>
+        `;
+
+      document.querySelectorAll("[data-tab]").forEach(button => {
+        button.classList.toggle(
+          "active",
+          button.dataset.tab === currentTab
+        );
+      });
+
+      if (!selected) {
+        $("#content").innerHTML =
+          '<p class="empty">點選「新增課程」開始使用。</p>';
+        return;
+      }
+
+      if (currentTab === "students") renderStudents();
+      if (currentTab === "sessions") renderSessions();
+      if (currentTab === "grades") renderGrades();
+    }
+
+    function renderStudents() {
+      const rows = students().map(student => `
+        <tr>
+          <td>${escapeHTML(student.department)}</td>
+          <td>${escapeHTML(student.number)}</td>
+          <td>${escapeHTML(student.name)}</td>
+          <td>
+            <button data-edit-student="${escapeHTML(student.id)}">
+              編輯
+            </button>
+            <button class="danger"
+              data-delete-student="${escapeHTML(student.id)}">
+              刪除
+            </button>
+          </td>
+        </tr>
+      `).join("");
+
+      $("#content").innerHTML = `
+        <div class="bar">
+          <h2>學生名單（${students().length} 人）</h2>
+          <button class="primary" data-add-student>＋ 新增學生</button>
+        </div>
+        ${rows ? `
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>系所</th><th>學號</th><th>姓名</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        ` : '<p class="empty">尚無學生，請先新增學生。</p>'}
+      `;
+    }
+
+    function renderSessions() {
+      const rows = sessions().map(session => `
+        <tr>
+          <td>${escapeHTML(session.date)}</td>
+          <td>${escapeHTML(session.topic || "課堂成績")}</td>
+          <td>${escapeHTML(session.maxScore)}</td>
+          <td>
+            <button data-open-session="${escapeHTML(session.id)}">
+              輸入成績
+            </button>
+            <button class="danger"
+              data-delete-session="${escapeHTML(session.id)}">
+              刪除
+            </button>
+          </td>
+        </tr>
+      `).join("");
+
+      $("#content").innerHTML = `
+        <div class="bar">
+          <h2>課堂紀錄</h2>
+          <button class="primary" data-add-session>＋ 新增日期</button>
+        </div>
+        ${rows ? `
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>日期</th><th>主題</th><th>滿分</th><th>操作</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        ` : '<p class="empty">還沒有課堂日期。</p>'}
+      `;
+    }
+
+    function renderGrades() {
+      const dates = sessions();
+      const rows = students().map(student => `
+        <tr>
+          <td>${escapeHTML(student.number)}</td>
+          <td>${escapeHTML(student.name)}</td>
+          ${dates.map(session => `
+            <td>${score(session.id, student.id)?.value ?? "—"}</td>
+          `).join("")}
+          <td><strong>${average(student.id)}</strong></td>
+        </tr>
+      `).join("");
+
+      $("#content").innerHTML = `
+        <div class="bar">
+          <div>
+            <h2>成績總表</h2>
+            <p class="muted">平均只計入已輸入的分數。</p>
+          </div>
+          <div class="actions">
+            <button data-add-student>＋ 新增學生</button>
+            <button class="primary" data-add-session>＋ 新增日期</button>
+          </div>
+        </div>
+        ${students().length ? `
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>學號</th><th>姓名</th>
+                  ${dates.map(session => `
+                    <th>${escapeHTML(session.date)}<br>
+                      <small>滿分 ${escapeHTML(session.maxScore)}</small>
+                    </th>
+                  `).join("")}
+                  <th>平均</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        ` : '<p class="empty">新增學生後，成績會顯示在這裡。</p>'}
+      `;
+    }
+
+    function openForm(type, id = null) {
+      editing = { type, id };
+
+      const item = type === "course"
+        ? data.courses.find(x => x.id === id)
+        : type === "student"
+          ? data.students.find(x => x.id === id)
+          : null;
+
+      const field = (name, label, value = "", inputType = "text") => `
+        <label>
+          ${label}
+          <input name="${name}" type="${inputType}"
+            value="${escapeHTML(value)}" required>
+        </label>
+      `;
+
+      $("#editorTitle").textContent = {
+        course: id ? "編輯課程" : "新增課程",
+        student: id ? "編輯學生" : "新增學生",
+        session: "新增課堂日期"
+      }[type];
+
+      $("#formFields").innerHTML = type === "course"
+        ? `
+          ${field("name", "課程名稱", item?.name)}
+          ${field("teacher", "授課教師", item?.teacher)}
+          ${field("schedule", "上課時間", item?.schedule)}
+          ${field("classroom", "教室", item?.classroom)}
+          <label>
+            學期
+            <input name="semester"
+              value="${escapeHTML(item?.semester || "")}">
+          </label>
+        `
+        : type === "student"
+          ? `
+            ${field("department", "系所", item?.department)}
+            ${field("number", "學號", item?.number)}
+            ${field("name", "姓名", item?.name)}
+          `
+          : `
+            ${field(
+              "date",
+              "日期",
+              new Date().toLocaleDateString("en-CA"),
+              "date"
+            )}
+            <label>課堂主題 <input name="topic"></label>
+            ${field("maxScore", "滿分", 10, "number")}
+          `;
+
+      $("#editor").showModal();
+    }
+
+    $("#editorForm").addEventListener("submit", event => {
+      event.preventDefault();
+
+      const form = new FormData(event.currentTarget);
+      const values = Object.fromEntries(form.entries());
+      const { type, id } = editing;
+
+      if (type === "course") {
+        if (id) {
+          Object.assign(data.courses.find(x => x.id === id), values);
+        } else {
+          const newCourse = { id: uid(), ...values };
+          data.courses.push(newCourse);
+          currentCourse = newCourse.id;
+        }
+      }
+
+      if (type === "student") {
+        const numberTaken = data.students.some(student =>
+          student.courseId === currentCourse &&
+          student.number === values.number &&
+          student.id !== id
+        );
+
+        if (numberTaken) {
+          alert("這個學號已存在。");
+          return;
+        }
+
+        if (id) {
+          Object.assign(data.students.find(x => x.id === id), values);
+        } else {
+          data.students.push({
+            id: uid(),
+            courseId: currentCourse,
+            ...values
+          });
+        }
+      }
+
+      if (type === "session") {
+        if (data.sessions.some(session =>
+          session.courseId === currentCourse &&
+          session.date === values.date
+        )) {
+          alert("這個日期已存在。");
+          return;
+        }
+
+        const maxScore = Number(values.maxScore);
+        if (!Number.isFinite(maxScore) || maxScore <= 0) {
+          alert("滿分必須大於 0。");
+          return;
+        }
+
+        data.sessions.push({
+          id: uid(),
+          courseId: currentCourse,
+          date: values.date,
+          topic: values.topic,
+          maxScore
+        });
+      }
+
+      $("#editor").close();
+      save();
+    });
+
+    $("#cancelEdit").addEventListener("click", () => {
+      $("#editor").close();
+    });
+
+    $("#addCourse").addEventListener("click", () => {
+      openForm("course");
+    });
+
+    $("#courseSelect").addEventListener("change", event => {
+      currentCourse = event.target.value;
+      render();
+    });
+
+    document.querySelector(".tabs").addEventListener("click", event => {
+      const tab = event.target.closest("[data-tab]");
+      if (!tab) return;
+      currentTab = tab.dataset.tab;
+      render();
+    });
+
+    $("#courseInfo").addEventListener("click", event => {
+      if (event.target.closest("[data-edit-course]")) {
+        openForm("course", currentCourse);
+      }
+    });
+
+    $("#content").addEventListener("click", event => {
+      const button = event.target.closest("button");
+      if (!button) return;
+
+      if (button.hasAttribute("data-add-student")) {
+        openForm("student");
+      }
+
+      if (button.hasAttribute("data-add-session")) {
+        openForm("session");
+      }
+
+      if (button.hasAttribute("data-edit-student")) {
+        openForm("student", button.dataset.editStudent);
+      }
+
+      if (button.hasAttribute("data-delete-student")) {
+        const id = button.dataset.deleteStudent;
+        if (!confirm("確定刪除此學生及其成績？")) return;
+        data.students = data.students.filter(x => x.id !== id);
+        data.scores = data.scores.filter(x => x.studentId !== id);
+        save();
+      }
+
+      if (button.hasAttribute("data-delete-session")) {
+        const id = button.dataset.deleteSession;
+        if (!confirm("確定刪除此日期及當日成績？")) return;
+        data.sessions = data.sessions.filter(x => x.id !== id);
+        data.scores = data.scores.filter(x => x.sessionId !== id);
+        save();
+      }
+
+      if (button.hasAttribute("data-open-session")) {
+        const session = data.sessions.find(
+          x => x.id === button.dataset.openSession
+        );
+
+        $("#content").innerHTML = `
+          <div class="bar">
+            <div>
+              <h2>${escapeHTML(session.date)} 成績</h2>
+              <p class="muted">
+                ${escapeHTML(session.topic || "課堂成績")} ·
+                滿分 ${escapeHTML(session.maxScore)}
+              </p>
+            </div>
+            <button data-back-sessions>返回日期列表</button>
+          </div>
+          ${students().length ? `
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr><th>學號</th><th>姓名</th><th>成績</th></tr>
+                </thead>
+                <tbody>
+                  ${students().map(student => `
+                    <tr>
+                      <td>${escapeHTML(student.number)}</td>
+                      <td>${escapeHTML(student.name)}</td>
+                      <td>
+                        <input
+                          type="number"
+                          min="0"
+                          max="${escapeHTML(session.maxScore)}"
+                          step="0.1"
+                          data-score-session="${escapeHTML(session.id)}"
+                          data-score-student="${escapeHTML(student.id)}"
+                          value="${
+                            score(session.id, student.id)?.value ?? ""
+                          }"
+                          aria-label="${escapeHTML(student.name)}的成績">
+                      </td>
+                    </tr>
+                  `).join("")}
+                </tbody>
+              </table>
+            </div>
+          ` : '<p class="empty">請先新增學生。</p>'}
+        `;
+      }
+
+      if (button.hasAttribute("data-back-sessions")) {
+        renderSessions();
+      }
+    });
+
+    $("#content").addEventListener("change", event => {
+      const input = event.target.closest("[data-score-session]");
+      if (!input) return;
+
+      const session = data.sessions.find(
+        x => x.id === input.dataset.scoreSession
+      );
+      const value = input.value === "" ? null : Number(input.value);
+
+      if (
+        value !== null &&
+        (!Number.isFinite(value) ||
+          value < 0 ||
+          value > session.maxScore)
+      ) {
+        alert(`成績必須介於 0 和 ${session.maxScore} 之間。`);
+        input.value = score(
+          session.id,
+          input.dataset.scoreStudent
+        )?.value ?? "";
+        return;
+      }
+
+      const existing = score(
+        session.id,
+        input.dataset.scoreStudent
+      );
+
+      if (existing) {
+        existing.value = value;
+      } else {
+        data.scores.push({
+          sessionId: session.id,
+          studentId: input.dataset.scoreStudent,
+          value
+        });
+      }
+
+      save();
+      renderSessions();
+    });
+
+    render();
+  </script>
+</body>
+</html>
